@@ -143,7 +143,7 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
         num_items = 100;
     }
 
-    struct timeval start, end, elapsed;
+    struct timeval start, end, elapsed, iteration;
     uint64_t elapsed_us;
 
     fprintf(stderr, "number of threads: %zu\n", num_threads);
@@ -258,6 +258,7 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
         int thread_id = omp_get_thread_num();
         size_t unknown = 0;
         size_t found = 0;
+        size_t thread_queries = 0;
         uint64_t values = 0;
 
         conn* myconn = my_conns[thread_id];
@@ -269,8 +270,12 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
         struct timeval thread_start, thread_current, thread_elapsed;
         gettimeofday(&thread_start, NULL);
 
+        size_t query_counter = 0;
+
 #pragma omp for schedule(static)
         for (size_t i = 0; i < (num_threads * settings->x_benchmark_queries); i++) {
+
+            query_counter++;
             size_t idx = (i + (g_seed >> 16)) % (num_items);
             g_seed = (214013UL * g_seed + 2531011UL);
 
@@ -286,12 +291,19 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
                 values ^= *((uint64_t *)ITEM_data(it));
             }
 
-            if (((unknown + found ) % 1000000) == 0) {
+            if ((query_counter % 100) == 0) {
                 gettimeofday(&thread_current, NULL);
                 timersub(&thread_current, &thread_start, &thread_elapsed);
-                thread_start = thread_current;
-                uint64_t thread_elapsed_us = (thread_elapsed.tv_sec * 1000000) + thread_elapsed.tv_usec;
-                fprintf(stderr, "thread.%d executed 100000 queries in %lu us\n", thread_id, thread_elapsed_us);
+                if (thread_elapsed.tv_sec == PERIODIC_PRINT_INTERVAL) {
+
+                    uint64_t thread_elapsed_us = (thread_elapsed.tv_sec * 1000000) + thread_elapsed.tv_usec;
+                    fprintf(stderr, "thread.%d executed %lu queries in %lu us\n", thread_id,
+                        (query_counter) - thread_queries, thread_elapsed_us);
+
+                    // reset the thread start time
+                    thread_start = thread_current;
+                    thread_queries = (query_counter);
+                }
             }
         }
 
