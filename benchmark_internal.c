@@ -97,8 +97,183 @@ static void *send_packets_thread(void * arg) {
 }
 
 static pthread_t network_thread;
-
 #endif
+
+pthread_barrier_t barrier;
+
+struct thread_data {
+    size_t tid;
+    pthread_t thread;
+    conn* connection;
+    struct settings *settings;
+    size_t num_items;
+    size_t num_items_total;
+    size_t num_threads;
+};
+
+static void *do_populate(void *arg) {
+    struct thread_data *td = arg;
+
+#ifdef __linux__
+        // cpu_set_t my_set;
+        // CPU_ZERO(&my_set);
+        // CPU_SET(thread_id, &my_set);
+        // pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &my_set);
+#else
+        /* BSD/RUMP kernel doesn't do this! */
+        // cpuset_t *my_set = cpuset_create();
+        // cpuset_zero(my_set);
+        // cpuset_set(thread_id, my_set);
+        // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
+#endif
+
+
+    size_t my_counter = 0;
+    conn* myconn = td->connection;
+
+    size_t num_added = 0;
+    size_t num_not_added = 0;
+    size_t num_existed = 0;
+    size_t num_other_errors = 0;
+
+    for (size_t i = 0; i < td->num_items; i++) {
+        // calculate the key id
+        size_t keyval = td->tid * td->num_items + i;
+
+        my_counter++;
+
+        char key[BENCHMARK_ITEM_KEY_SIZE + 1];
+        snprintf(key, BENCHMARK_ITEM_KEY_SIZE + 1, "%08x", (unsigned int)keyval);
+
+        char value[BENCHMARK_ITEM_VALUE_SIZE + 1];
+        snprintf(value, BENCHMARK_ITEM_VALUE_SIZE, "value-%016lx", i);
+
+        item* it = item_alloc(key, BENCHMARK_ITEM_KEY_SIZE, 0, 0, BENCHMARK_ITEM_VALUE_SIZE);
+        if (!it) {
+            printf("Item was NULL! %zu\n", i);
+            continue;
+        }
+
+        memcpy(ITEM_data(it), value, BENCHMARK_ITEM_VALUE_SIZE);
+
+        uint64_t cas = 0;
+        switch (store_item(it, NREAD_SET, myconn->thread, NULL, &cas, CAS_NO_STALE)) {
+            case STORED:
+                num_added++;
+                myconn->cas = cas;
+                break;
+            case EXISTS:
+                num_existed++;
+                num_not_added++;
+                break;
+            case NOT_STORED:
+                num_not_added++;
+                break;
+            default:
+                num_other_errors++;
+                break;
+        }
+
+        if ((my_counter % 100000) == 0) {
+            fprintf(stderr, "populate: thread.%zu added %zu elements. \n",  td->tid, my_counter);
+        }
+    }
+    fprintf(stderr, "populate: thread.%zu done. added %zu elements, %zu not added of which %zu already existed\n", td->tid, num_added, num_not_added, num_existed);
+    return (void *)my_counter;
+
+}
+
+
+struct xor_shift {
+    uint64_t state;
+};
+
+static inline void xor_shift_init(struct xor_shift *st, uint64_t tid)
+{
+    st->state = 0xdeadbeefdeadbeef ^ tid;
+}
+
+static inline uint64_t xor_shift_next(struct xor_shift *st, uint64_t num_elements) {
+    // https://en.wikipedia.org/wiki/Xorshift
+    uint64_t x = st->state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    st->state = x;
+    return x % num_elements;
+}
+
+static void *do_run(void *arg) {
+    struct thread_data *td = arg;
+
+#ifdef __linux__
+        // cpu_set_t my_set;
+        // CPU_ZERO(&my_set);
+        // CPU_SET(thread_id, &my_set);
+        // pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &my_set);
+#else
+        /* BSD/RUMP kernel doesn't do this! */
+        // cpuset_t *my_set = cpuset_create();
+        // cpuset_zero(my_set);
+        // cpuset_set(thread_id, my_set);
+        // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
+#endif
+
+    conn* myconn = td->connection;
+
+    size_t unknown = 0;
+    size_t found = 0;
+    size_t thread_queries = 0;
+    uint64_t values = 0xabcdabcd;
+
+    fprintf(stderr,"thread:%zu uses connection %p\n", td->tid, (void *)myconn);
+
+    struct xor_shift rand;
+    xor_shift_init(&rand, td->tid);
+
+    struct timeval thread_start, thread_current, thread_elapsed;
+    gettimeofday(&thread_start, NULL);
+
+    size_t query_counter = 0;
+
+    for (size_t i = 0; i < td->settings->x_benchmark_queries; i++) {
+
+        query_counter++;
+        uint64_t idx = xor_shift_next(&rand, td->num_items_total);
+
+        char key[BENCHMARK_ITEM_KEY_SIZE + 1];
+        snprintf(key, BENCHMARK_ITEM_KEY_SIZE + 1, "%08x", (unsigned int)idx);
+
+        item* it = item_get(key, BENCHMARK_ITEM_KEY_SIZE, myconn->thread, DONT_UPDATE);
+        if (!it) {
+            unknown++;
+        } else {
+            found++;
+            // access the item
+            values ^= *((uint64_t *)ITEM_data(it));
+        }
+
+        if ((query_counter % 100) == 0) {
+            gettimeofday(&thread_current, NULL);
+            timersub(&thread_current, &thread_start, &thread_elapsed);
+            if (thread_elapsed.tv_sec == PERIODIC_PRINT_INTERVAL) {
+
+                uint64_t thread_elapsed_us = (thread_elapsed.tv_sec * 1000000) + thread_elapsed.tv_usec;
+                fprintf(stderr, "thread.%zu executed %lu queries in %lu us\n", td->tid,
+                    (query_counter) - thread_queries, thread_elapsed_us);
+
+                // reset the thread start time
+                thread_start = thread_current;
+                thread_queries = (query_counter);
+            }
+        }
+    }
+
+    fprintf(stderr,"thread:%zu done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", td->tid, query_counter, found, unknown, values);
+
+    return (void *)query_counter;
+}
+
 
 void internal_benchmark_run(struct settings* settings, struct event_base *main_base)
 {
@@ -121,19 +296,11 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     fprintf(stderr, "INTERNAL BENCHMARK STARTING\n");
     fprintf(stderr, "=====================================\n");
 
-
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-    // Establish the connections
-    ////////////////////////////////////////////////////////////////////////////////////////////////
+    // yeah we still use openmp to figure out the number of threads!
     size_t num_threads = omp_get_num_procs();
-    conn** my_conns = calloc(num_threads, sizeof(*my_conns));
-    for (size_t i = 0; i < num_threads; i++) {
-        my_conns[i] = conn_new(i, conn_listening, 0, 0, local_transport, main_base, NULL, 0, ascii_prot);
-        my_conns[i]->thread = malloc(sizeof(LIBEVENT_THREAD));
-    }
 
-    // set the number of threads to the amount of processors we have
-    omp_set_num_threads(num_threads);
+    // initialize barrier
+    pthread_barrier_init(&barrier, NULL, num_threads + 1);
 
 
     // calculate the amount of items to fit within memory.
@@ -143,7 +310,25 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
         num_items = 100;
     }
 
-    struct timeval start, end, elapsed, iteration;
+    size_t num_items_per_thread = (num_items + num_threads - 1) / num_threads;
+    num_items = num_items_per_thread * num_threads;
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+    // Establish the connections
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+
+    struct thread_data *threads = calloc(num_threads, sizeof(*threads));
+    for (size_t i = 0; i < num_threads; i++) {
+        threads[i].tid = i;
+        threads[i].connection = conn_new(i, conn_listening, 0, 0, local_transport, main_base, NULL, 0, ascii_prot);
+        threads[i].connection->thread = malloc(sizeof(LIBEVENT_THREAD));
+        threads[i].settings = settings;
+        threads[i].num_items = num_items_per_thread;
+        threads[i].num_items_total = num_items;
+        threads[i].num_threads = num_threads;
+    }
+
+    struct timeval start, end, elapsed;
     uint64_t elapsed_us;
 
     fprintf(stderr, "number of threads: %zu\n", num_threads);
@@ -165,77 +350,20 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
 
     gettimeofday(&start, NULL);
 
-/* prepopulate the thing */
-#pragma omp parallel reduction(+ \
-                               : counter)
-    {
-        /* pin threads */
-        int thread_id = omp_get_thread_num();
-        size_t my_counter=0;
-
-#ifdef __linux__
-        // cpu_set_t my_set;
-        // CPU_ZERO(&my_set);
-        // CPU_SET(thread_id, &my_set);
-        // pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &my_set);
-#else
-        /* BSD/RUMP kernel doesn't do this! */
-        // cpuset_t *my_set = cpuset_create();
-        // cpuset_zero(my_set);
-        // cpuset_set(thread_id, my_set);
-        // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
-#endif
-        conn* myconn = my_conns[thread_id];
-
-        size_t num_added = 0;
-        size_t num_not_added = 0;
-        size_t num_existed = 0;
-        size_t num_other_errors = 0;
-
-#pragma omp for schedule(static, 1024)
-        for (size_t i = 0; i < num_items; i++) {
-
-            my_counter++;
-
-            char key[BENCHMARK_ITEM_KEY_SIZE + 1];
-            snprintf(key, BENCHMARK_ITEM_KEY_SIZE + 1, "%08x", (unsigned int)i);
-
-            char value[BENCHMARK_ITEM_VALUE_SIZE + 1];
-            snprintf(value, BENCHMARK_ITEM_VALUE_SIZE, "value-%016lx", i);
-
-            item* it = item_alloc(key, BENCHMARK_ITEM_KEY_SIZE, 0, 0, BENCHMARK_ITEM_VALUE_SIZE);
-            if (!it) {
-                printf("Item was NULL! %zu\n", i);
-                continue;
-            }
-
-            memcpy(ITEM_data(it), value, BENCHMARK_ITEM_VALUE_SIZE);
-
-            uint64_t cas = 0;
-            switch (store_item(it, NREAD_SET, myconn->thread, NULL, &cas, CAS_NO_STALE)) {
-                case STORED:
-                    num_added++;
-                    myconn->cas = cas;
-                    break;
-                case EXISTS:
-                    num_existed++;
-                    num_not_added++;
-                    break;
-                case NOT_STORED:
-                    num_not_added++;
-                    break;
-                default:
-                    num_other_errors++;
-                    break;
-            }
-
-            if ((my_counter % 1000000) == 0) {
-                fprintf(stderr, "populate: thread %d added %zu elements. \n", thread_id, counter);
-            }
+    for (size_t i = 0; i < num_threads; i++) {
+        if (pthread_create(&threads[i].thread, NULL, do_populate, (void*)&threads[i]) != 0) {
+            fprintf(stderr, "ERROR: failed to create thread!\n");
+            exit(1);;
         }
-        counter = my_counter;
-        fprintf(stderr, "populate: thread %d done. added %zu elements, %zu not added of which %zu already existed\n", thread_id, num_added, num_not_added, num_existed);
     }
+
+    size_t num_elements = 0;
+    for (size_t i = 0; i < num_threads; i++) {
+        void* retval = NULL;
+        pthread_join(threads[i].thread, &retval);
+        num_elements += (size_t)retval;
+    }
+
 
     gettimeofday(&end, NULL);
     timersub(&end, &start, &elapsed);
@@ -248,75 +376,28 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
 
     gettimeofday(&start, NULL);
 
-    size_t num_queries = 0;
-// for (size_t i = 0; i < 2; i++) {
-#pragma omp parallel reduction(+ \
-                               : num_queries)
-    {
-
-        /* pin threads */
-        int thread_id = omp_get_thread_num();
-        size_t unknown = 0;
-        size_t found = 0;
-        size_t thread_queries = 0;
-        uint64_t values = 0;
-
-        conn* myconn = my_conns[thread_id];
-
-        fprintf(stderr,"thread:%i uses connection %p\n", thread_id, (void *)myconn);
-
-        size_t g_seed = (214013UL * thread_id + 2531011UL);
-
-        struct timeval thread_start, thread_current, thread_elapsed;
-        gettimeofday(&thread_start, NULL);
-
-        size_t query_counter = 0;
-
-#pragma omp for schedule(static)
-        for (size_t i = 0; i < (num_threads * settings->x_benchmark_queries); i++) {
-
-            query_counter++;
-            size_t idx = (i + (g_seed >> 16)) % (num_items);
-            g_seed = (214013UL * g_seed + 2531011UL);
-
-            char key[BENCHMARK_ITEM_KEY_SIZE + 1];
-            snprintf(key, BENCHMARK_ITEM_KEY_SIZE + 1, "%08x", (unsigned int)idx);
-
-            item* it = item_get(key, BENCHMARK_ITEM_KEY_SIZE, myconn->thread, DONT_UPDATE);
-            if (!it) {
-                unknown++;
-            } else {
-                found++;
-                // access the item
-                values ^= *((uint64_t *)ITEM_data(it));
-            }
-
-            if ((query_counter % 100) == 0) {
-                gettimeofday(&thread_current, NULL);
-                timersub(&thread_current, &thread_start, &thread_elapsed);
-                if (thread_elapsed.tv_sec == PERIODIC_PRINT_INTERVAL) {
-
-                    uint64_t thread_elapsed_us = (thread_elapsed.tv_sec * 1000000) + thread_elapsed.tv_usec;
-                    fprintf(stderr, "thread.%d executed %lu queries in %lu us\n", thread_id,
-                        (query_counter) - thread_queries, thread_elapsed_us);
-
-                    // reset the thread start time
-                    thread_start = thread_current;
-                    thread_queries = (query_counter);
-                }
-            }
+    for (size_t i = 0; i < num_threads; i++) {
+        if (pthread_create(&threads[i].thread, NULL, do_run, (void*)&threads[i]) != 0) {
+            fprintf(stderr, "ERROR: failed to create thread!\n");
+            exit(1);;
         }
-
-        num_queries += unknown + found;
-        fprintf(stderr,"thread:%i done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", thread_id, num_queries, found, unknown, values);
     }
+
+    size_t num_queries = 0;
+    for (size_t i = 0; i < num_threads; i++) {
+        void* retval = NULL;
+        pthread_join(threads[i].thread, &retval);
+        num_queries += (size_t)retval;
+    }
+
     gettimeofday(&end, NULL);
 
     timersub(&end, &start, &elapsed);
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
 
     fprintf(stderr, "benchmark took %lu ms\n", elapsed_us / 1000);
-    fprintf(stderr, "benchmark took %lu queries / second\n", (num_queries / elapsed_us) * 1000000);
+    // converting num_queries per microsecond to num qeuries per second.
+    fprintf(stderr, "benchmark took %lu queries / second\n", (num_queries * 1000000 / elapsed_us));
     fprintf(stderr, "benchmark executed %lu / %lu queries\n", num_queries, (num_threads * settings->x_benchmark_queries));
 
     fprintf(stderr, "terminating.\n");
