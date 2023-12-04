@@ -150,8 +150,8 @@ struct thread_data {
 
 
 static void set_affinity( struct thread_data *td) {
+    fprintf(stderr, "thread.%zu attempting to set thread affinity \n", td->tid);
     #if defined(__FreeBSD__) && defined(HAVE_CPUSET_SETAFFINITY)
-
     cpuset_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(td->tid, &cpuset);
@@ -192,10 +192,7 @@ static void set_affinity( struct thread_data *td) {
     CPU_SET(td->tid, &cpuset);
     (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
     #else
-    cpuset_t *cpuset = cpuset_create();
-    cpuset_set(td->tid, cpuset);
-    (void)pthread_setaffinity_np(pthread_self(), cpuset_size(cpuset), cpuset);
-    cpuset_destroy(cpuset);
+    fprintf(stderr, "thread.%zu cannot set thread affinity.\n", td->tid);
     #endif
 }
 
