@@ -420,11 +420,14 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     num_elements = 0;
 
     for (size_t i = 0; i < num_threads; i++) {
+        fprintf(stderr, "starting thread %zu / %zu\n", i, num_threads);
         if (pthread_create(&threads[i].thread, NULL, do_run, (void*)&threads[i]) != 0) {
             fprintf(stderr, "ERROR: failed to create thread!\n");
             exit(1);
         }
     }
+
+    fprintf(stderr, "starting all %zu threads\n", num_threads);
 
     // wait until threads have finished setting affinity
     pthread_barrier_wait(&barrier);
