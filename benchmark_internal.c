@@ -1,3 +1,8 @@
+#ifdef __linux__
+#define _GNU_SOURCE
+#include <sched.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +22,27 @@ size_t thread_barrier;
 size_t num_elements;
 size_t num_queries;
 pthread_mutex_t lock;
+
+
+struct xor_shift {
+    uint64_t state;
+};
+
+static inline void xor_shift_init(struct xor_shift *st, uint64_t tid)
+{
+    st->state = 0xdeadbeefdeadbeef ^ tid;
+}
+
+static inline uint64_t xor_shift_next(struct xor_shift *st, uint64_t num_elements) {
+    // https://en.wikipedia.org/wiki/Xorshift
+    uint64_t x = st->state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    st->state = x;
+    return x % num_elements;
+}
+
 
 void internal_benchmark_config(struct settings* settings)
 {
@@ -114,24 +140,14 @@ struct thread_data {
     size_t num_items;
     size_t num_items_total;
     size_t num_threads;
+
+    size_t num_elements;
+    size_t num_queries_hit;
+    size_t num_queries_missed;
 };
 
 static void *do_populate(void *arg) {
     struct thread_data *td = arg;
-
-#ifdef __linux__
-        // cpu_set_t my_set;
-        // CPU_ZERO(&my_set);
-        // CPU_SET(thread_id, &my_set);
-        // pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &my_set);
-#else
-        /* BSD/RUMP kernel doesn't do this! */
-        // cpuset_t *my_set = cpuset_create();
-        // cpuset_zero(my_set);
-        // cpuset_set(thread_id, my_set);
-        // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
-#endif
-
 
     size_t my_counter = 0;
     conn* myconn = td->connection;
@@ -184,50 +200,15 @@ static void *do_populate(void *arg) {
         }
     }
     fprintf(stderr, "populate: thread.%zu done. added %zu elements, %zu not added of which %zu already existed\n", td->tid, num_added, num_not_added, num_existed);
-    
-    pthread_mutex_lock(&lock); 
-    thread_barrier++;
-    num_elements += my_counter;
-    pthread_mutex_unlock(&lock); 
-    return (void *)my_counter;
 
+    // store the number of elements
+    td->num_elements = my_counter;
+    return NULL;
 }
 
 
-struct xor_shift {
-    uint64_t state;
-};
-
-static inline void xor_shift_init(struct xor_shift *st, uint64_t tid)
-{
-    st->state = 0xdeadbeefdeadbeef ^ tid;
-}
-
-static inline uint64_t xor_shift_next(struct xor_shift *st, uint64_t num_elements) {
-    // https://en.wikipedia.org/wiki/Xorshift
-    uint64_t x = st->state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    st->state = x;
-    return x % num_elements;
-}
-
-static void *do_run(void *arg) {
+static void *do_benchmark(void *arg) {
     struct thread_data *td = arg;
-
-#ifdef __linux__
-        // cpu_set_t my_set;
-        // CPU_ZERO(&my_set);
-        // CPU_SET(thread_id, &my_set);
-        // pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &my_set);
-#else
-        /* BSD/RUMP kernel doesn't do this! */
-        // cpuset_t *my_set = cpuset_create();
-        // cpuset_zero(my_set);
-        // cpuset_set(thread_id, my_set);
-        // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
-#endif
 
     conn* myconn = td->connection;
 
@@ -281,11 +262,76 @@ static void *do_run(void *arg) {
 
     fprintf(stderr,"thread:%zu done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", td->tid, query_counter, found, unknown, values);
 
-    pthread_mutex_lock(&lock); 
-    thread_barrier++;
-    num_queries += query_counter;
-    pthread_mutex_unlock(&lock); 
-    return (void *)query_counter;
+    td->num_queries_hit = found;
+    td->num_queries_missed = unknown;
+    return NULL;
+}
+
+
+static void *do_run(void *arg) {
+    struct thread_data *td = arg;
+
+
+    #if defined(__FreeBSD__) && defined(HAVE_CPUSET_SETAFFINITY)
+
+    cpuset_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset), &cpuset);
+
+    #elif defined(__DragonFly__) && defined(HAVE_PTHREAD_SETAFFINITY_NP)
+
+    cpuset_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+
+    #elif defined(__NetBSD__) && defined(HAVE_PTHREAD_SETAFFINITY_NP)
+
+    cpuset_t *cpuset = cpuset_create();
+    cpuset_set(td->tid, cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), cpuset_size(cpuset), cpuset);
+    cpuset_destroy(cpuset);
+
+    #elif defined(HAVE_SCHED_SETAFFINITY)
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)sched_setaffinity(0, sizeof(cpuset), &cpuset);
+
+    #elif defined(HAVE_CPUSET_SETAFFINITY)
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset), &cpuset);
+
+    #elif defined(HAVE_PTHREAD_SETAFFINITY_NP) || defined(__linux__)
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    #else
+    # error Unknown platform
+    #endif
+
+    pthread_barrier_wait(&barrier);
+
+    do_populate(arg);
+
+    pthread_barrier_wait(&barrier);
+    sleep(1);
+    pthread_barrier_wait(&barrier);
+
+    do_benchmark(arg);
+
+    pthread_barrier_wait(&barrier);
+    // fprintf(stderr, "thread.%zu done. hanging around\n", td->tid);
+    pthread_barrier_wait(&barrier);
+
+    return NULL;
 }
 
 
@@ -349,8 +395,6 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     fprintf(stderr, "item size: %zu bytes\n", ITEM_SIZE);
     fprintf(stderr, "number of keys: %zu\n", num_items);
 
-    size_t counter = 0;
-
     fprintf(stderr, "Prefilling slabs\n");
     gettimeofday(&start, NULL);
     slabs_prefill_global();
@@ -360,68 +404,61 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
     fprintf(stderr, "Prefilling slabs took %lu ms\n", elapsed_us / 1000);
 
-    fprintf(stderr, "Populating %zu / %zu key-value pairs.\n", counter, num_items);
-
-    gettimeofday(&start, NULL);
 
     thread_barrier = 0;
     num_elements = 0;
 
     for (size_t i = 0; i < num_threads; i++) {
-        if (pthread_create(&threads[i].thread, NULL, do_populate, (void*)&threads[i]) != 0) {
+        if (pthread_create(&threads[i].thread, NULL, do_run, (void*)&threads[i]) != 0) {
             fprintf(stderr, "ERROR: failed to create thread!\n");
-            exit(1);;
+            exit(1);
         }
     }
 
-    // Barrier
-    int threads_running = 1;
-    while(threads_running) {
-        pthread_mutex_lock(&lock);
-        if(thread_barrier == num_threads)
-            threads_running = 0;
-        pthread_mutex_unlock(&lock);
-    }
+    // wait until threads have finished setting affinity
+    pthread_barrier_wait(&barrier);
+    gettimeofday(&start, NULL);
+    fprintf(stderr, "Start populating...\n");
 
+    // wait until threads have finished populating
+    pthread_barrier_wait(&barrier);
     gettimeofday(&end, NULL);
+
+    // threads now transition to the benchmarking phase
     timersub(&end, &start, &elapsed);
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
+
+    size_t counter = 0;
+    for (size_t i = 0; i < num_threads; i++) {
+        counter += threads[i].num_elements;
+    }
 
     fprintf(stderr, "Populated %zu / %zu key-value pairs in %lu ms:\n", counter, num_items, elapsed_us / 1000);
     fprintf(stderr, "=====================================\n");
 
+    pthread_barrier_wait(&barrier);
+    gettimeofday(&start, NULL);
     fprintf(stderr, "Executing %zu queries with %zu threads.\n", num_threads * settings->x_benchmark_queries, num_threads);
 
-    gettimeofday(&start, NULL);
-
-    thread_barrier = 0;
-    num_queries = 0;
-
-    for (size_t i = 0; i < num_threads; i++) {
-        if (pthread_create(&threads[i].thread, NULL, do_run, (void*)&threads[i]) != 0) {
-            fprintf(stderr, "ERROR: failed to create thread!\n");
-            exit(1);;
-        }
-    }
-
-    // Barrier
-    threads_running = 1;
-    while(threads_running) {
-        pthread_mutex_lock(&lock);
-        if(thread_barrier == num_threads)
-            threads_running = 0;
-        pthread_mutex_unlock(&lock);
-    }
-
+    pthread_barrier_wait(&barrier);
     gettimeofday(&end, NULL);
+
+    size_t num_queries = 0;
+    size_t missed_queries = 0;
+    for (size_t i = 0; i < num_threads; i++) {
+        num_queries  += (threads[i].num_queries_hit + threads[i].num_queries_missed);
+        missed_queries += threads[i].num_queries_missed;
+    }
 
     timersub(&end, &start, &elapsed);
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
 
+    fprintf(stderr, "===============================================================================\n");
     fprintf(stderr, "benchmark took %lu ms\n", elapsed_us / 1000);
     // converting num_queries per microsecond to num qeuries per second.
     fprintf(stderr, "benchmark took %lu queries / second\n", (num_queries * 1000000 / elapsed_us));
-    fprintf(stderr, "benchmark executed %lu / %lu queries\n", num_queries, (num_threads * settings->x_benchmark_queries));
+
+    fprintf(stderr, "benchmark executed %zu / %zu queries   (%zu missed) \n", num_queries, (num_threads * settings->x_benchmark_queries), missed_queries);
 
     fprintf(stderr, "terminating.\n");
     fprintf(stderr, "===============================================================================\n");
