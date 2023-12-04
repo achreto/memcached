@@ -274,6 +274,143 @@ static void *do_run(void *arg) {
     return (void *)query_counter;
 }
 
+static void *do_populate_and_run(void* arg) {
+
+    pthread_barrier_wait(&barrier);
+
+    /// POPULATE
+
+    struct thread_data *td = arg;
+
+#ifdef __linux__
+        // cpu_set_t my_set;
+        // CPU_ZERO(&my_set);
+        // CPU_SET(thread_id, &my_set);
+        // pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &my_set);
+#else
+        /* BSD/RUMP kernel doesn't do this! */
+        // cpuset_t *my_set = cpuset_create();
+        // cpuset_zero(my_set);
+        // cpuset_set(thread_id, my_set);
+        // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
+#endif
+
+
+    size_t my_counter = 0;
+    conn* myconn = td->connection;
+
+    size_t num_added = 0;
+    size_t num_not_added = 0;
+    size_t num_existed = 0;
+    size_t num_other_errors = 0;
+
+    for (size_t i = 0; i < td->num_items; i++) {
+        // calculate the key id
+        size_t keyval = td->tid * td->num_items + i;
+
+        my_counter++;
+
+        char key[BENCHMARK_ITEM_KEY_SIZE + 1];
+        snprintf(key, BENCHMARK_ITEM_KEY_SIZE + 1, "%08x", (unsigned int)keyval);
+
+        char value[BENCHMARK_ITEM_VALUE_SIZE + 1];
+        snprintf(value, BENCHMARK_ITEM_VALUE_SIZE, "value-%016lx", i);
+
+        item* it = item_alloc(key, BENCHMARK_ITEM_KEY_SIZE, 0, 0, BENCHMARK_ITEM_VALUE_SIZE);
+        if (!it) {
+            printf("Item was NULL! %zu\n", i);
+            continue;
+        }
+
+        memcpy(ITEM_data(it), value, BENCHMARK_ITEM_VALUE_SIZE);
+
+        uint64_t cas = 0;
+        switch (store_item(it, NREAD_SET, myconn->thread, NULL, &cas, CAS_NO_STALE)) {
+            case STORED:
+                num_added++;
+                myconn->cas = cas;
+                break;
+            case EXISTS:
+                num_existed++;
+                num_not_added++;
+                break;
+            case NOT_STORED:
+                num_not_added++;
+                break;
+            default:
+                num_other_errors++;
+                break;
+        }
+
+        if ((my_counter % 100000) == 0) {
+            fprintf(stderr, "populate: thread.%zu added %zu elements. \n",  td->tid, my_counter);
+        }
+    }
+    fprintf(stderr, "populate: thread.%zu done. added %zu elements, %zu not added of which %zu already existed\n", td->tid, num_added, num_not_added, num_existed);
+    // return (void *)my_counter;
+
+    // Signal to main thread that population is finished
+    pthread_barrier_wait(&barrier);
+    
+    // Wait for main thread to print before starting queries
+    pthread_barrier_wait(&barrier);
+    
+    /// RUN
+
+    size_t unknown = 0;
+    size_t found = 0;
+    size_t thread_queries = 0;
+    uint64_t values = 0xabcdabcd;
+
+    fprintf(stderr,"thread:%zu uses connection %p\n", td->tid, (void *)myconn);
+
+    struct xor_shift rand;
+    xor_shift_init(&rand, td->tid);
+
+    struct timeval thread_start, thread_current, thread_elapsed;
+    gettimeofday(&thread_start, NULL);
+
+    size_t query_counter = 0;
+
+    for (size_t i = 0; i < td->settings->x_benchmark_queries; i++) {
+
+        query_counter++;
+        uint64_t idx = xor_shift_next(&rand, td->num_items_total);
+
+        char key[BENCHMARK_ITEM_KEY_SIZE + 1];
+        snprintf(key, BENCHMARK_ITEM_KEY_SIZE + 1, "%08x", (unsigned int)idx);
+
+        item* it = item_get(key, BENCHMARK_ITEM_KEY_SIZE, myconn->thread, DONT_UPDATE);
+        if (!it) {
+            unknown++;
+        } else {
+            found++;
+            // access the item
+            values ^= *((uint64_t *)ITEM_data(it));
+        }
+
+        if ((query_counter % 100) == 0) {
+            gettimeofday(&thread_current, NULL);
+            timersub(&thread_current, &thread_start, &thread_elapsed);
+            if (thread_elapsed.tv_sec == PERIODIC_PRINT_INTERVAL) {
+
+                uint64_t thread_elapsed_us = (thread_elapsed.tv_sec * 1000000) + thread_elapsed.tv_usec;
+                fprintf(stderr, "thread.%zu executed %lu queries in %lu us\n", td->tid,
+                    (query_counter) - thread_queries, thread_elapsed_us);
+
+                // reset the thread start time
+                thread_start = thread_current;
+                thread_queries = (query_counter);
+            }
+        }
+    }
+
+    fprintf(stderr,"thread:%zu done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", td->tid, query_counter, found, unknown, values);
+
+    pthread_barrier_wait(&barrier);
+    return (void *)query_counter;
+
+}
 
 void internal_benchmark_run(struct settings* settings, struct event_base *main_base)
 {
@@ -351,20 +488,18 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     gettimeofday(&start, NULL);
 
     for (size_t i = 0; i < num_threads; i++) {
-        if (pthread_create(&threads[i].thread, NULL, do_populate, (void*)&threads[i]) != 0) {
+        if (pthread_create(&threads[i].thread, NULL, do_populate_and_run, (void*)&threads[i]) != 0) {
             fprintf(stderr, "ERROR: failed to create thread!\n");
             exit(1);;
         }
     }
 
-    size_t num_elements = 0;
-    for (size_t i = 0; i < num_threads; i++) {
-        void* retval = NULL;
-        pthread_join(threads[i].thread, &retval);
-        num_elements += (size_t)retval;
-    }
+    // Begin Populate
+    pthread_barrier_wait(&barrier);
 
-
+    // Done populating
+    pthread_barrier_wait(&barrier);
+    
     gettimeofday(&end, NULL);
     timersub(&end, &start, &elapsed);
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
@@ -372,28 +507,25 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     fprintf(stderr, "Populated %zu / %zu key-value pairs in %lu ms:\n", counter, num_items, elapsed_us / 1000);
     fprintf(stderr, "=====================================\n");
 
+    // Begin queries 
+    pthread_barrier_wait(&barrier);
     fprintf(stderr, "Executing %zu queries with %zu threads.\n", num_threads * settings->x_benchmark_queries, num_threads);
-
     gettimeofday(&start, NULL);
 
-    for (size_t i = 0; i < num_threads; i++) {
-        if (pthread_create(&threads[i].thread, NULL, do_run, (void*)&threads[i]) != 0) {
-            fprintf(stderr, "ERROR: failed to create thread!\n");
-            exit(1);;
-        }
-    }
+    // Queries finished
+    pthread_barrier_wait(&barrier);
+    gettimeofday(&end, NULL);
 
+    timersub(&end, &start, &elapsed);
+    elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
+   
+    // Join threads after finishing 
     size_t num_queries = 0;
     for (size_t i = 0; i < num_threads; i++) {
         void* retval = NULL;
         pthread_join(threads[i].thread, &retval);
         num_queries += (size_t)retval;
     }
-
-    gettimeofday(&end, NULL);
-
-    timersub(&end, &start, &elapsed);
-    elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
 
     fprintf(stderr, "benchmark took %lu ms\n", elapsed_us / 1000);
     // converting num_queries per microsecond to num qeuries per second.
