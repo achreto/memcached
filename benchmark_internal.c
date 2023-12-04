@@ -447,9 +447,10 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     fprintf(stderr, "Populated %zu / %zu key-value pairs in %lu ms:\n", counter, num_items, elapsed_us / 1000);
     fprintf(stderr, "=====================================\n");
 
+
+    fprintf(stderr, "Executing %zu queries with %zu threads.\n", num_threads * settings->x_benchmark_queries, num_threads);
     pthread_barrier_wait(&barrier);
     gettimeofday(&start, NULL);
-    fprintf(stderr, "Executing %zu queries with %zu threads.\n", num_threads * settings->x_benchmark_queries, num_threads);
 
     pthread_barrier_wait(&barrier);
     gettimeofday(&end, NULL);
