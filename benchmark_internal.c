@@ -130,6 +130,9 @@ static pthread_t network_thread;
 #endif
 
 pthread_barrier_t barrier;
+pthread_barrier_t barrier1;
+pthread_barrier_t barrier2;
+pthread_barrier_t barrier3;
 
 struct thread_data {
     size_t tid;
@@ -144,6 +147,54 @@ struct thread_data {
     size_t num_queries_hit;
     size_t num_queries_missed;
 };
+
+
+static void set_affinity( struct thread_data *td) {
+    #if defined(__FreeBSD__) && defined(HAVE_CPUSET_SETAFFINITY)
+
+    cpuset_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset), &cpuset);
+
+    #elif defined(__DragonFly__) && defined(HAVE_PTHREAD_SETAFFINITY_NP)
+
+    cpuset_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+
+    #elif defined(__NetBSD__) && defined(HAVE_PTHREAD_SETAFFINITY_NP)
+
+    cpuset_t *cpuset = cpuset_create();
+    cpuset_set(td->tid, cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), cpuset_size(cpuset), cpuset);
+    cpuset_destroy(cpuset);
+
+    #elif defined(HAVE_SCHED_SETAFFINITY)
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)sched_setaffinity(0, sizeof(cpuset), &cpuset);
+
+    #elif defined(HAVE_CPUSET_SETAFFINITY)
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset), &cpuset);
+
+    #elif defined(HAVE_PTHREAD_SETAFFINITY_NP) || defined(__linux__)
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(td->tid, &cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    #else
+    # error Unknown platform
+    #endif
+}
 
 static void *do_populate(void *arg) {
     struct thread_data *td = arg;
@@ -270,52 +321,9 @@ static void *do_benchmark(void *arg) {
 static void *do_run(void *arg) {
     struct thread_data *td = arg;
 
+    fprintf(stderr, "thread.%zu start running\n", td->tid);
 
-    #if defined(__FreeBSD__) && defined(HAVE_CPUSET_SETAFFINITY)
-
-    cpuset_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(td->tid, &cpuset);
-    (void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset), &cpuset);
-
-    #elif defined(__DragonFly__) && defined(HAVE_PTHREAD_SETAFFINITY_NP)
-
-    cpuset_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(td->tid, &cpuset);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
-
-    #elif defined(__NetBSD__) && defined(HAVE_PTHREAD_SETAFFINITY_NP)
-
-    cpuset_t *cpuset = cpuset_create();
-    cpuset_set(td->tid, cpuset);
-    (void)pthread_setaffinity_np(pthread_self(), cpuset_size(cpuset), cpuset);
-    cpuset_destroy(cpuset);
-
-    #elif defined(HAVE_SCHED_SETAFFINITY)
-
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(td->tid, &cpuset);
-    (void)sched_setaffinity(0, sizeof(cpuset), &cpuset);
-
-    #elif defined(HAVE_CPUSET_SETAFFINITY)
-
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(td->tid, &cpuset);
-    (void)cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset), &cpuset);
-
-    #elif defined(HAVE_PTHREAD_SETAFFINITY_NP) || defined(__linux__)
-
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(td->tid, &cpuset);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
-    #else
-    # error Unknown platform
-    #endif
-
+    set_affinity(td);
     pthread_barrier_wait(&barrier);
 
     do_populate(arg);
@@ -359,7 +367,11 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     size_t num_threads = omp_get_num_procs();
 
     // initialize barrier
-    pthread_barrier_init(&barrier, NULL, num_threads + 1);
+    if (pthread_barrier_init(&barrier, NULL, num_threads + 1) != 0) {
+        fprintf(stderr, "ERROR: failed to create thread!\n");
+        exit(1);
+    }
+
     pthread_mutex_init(&lock, NULL);
 
     // calculate the amount of items to fit within memory.
