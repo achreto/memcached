@@ -267,7 +267,7 @@ static void *do_benchmark(void *arg) {
     size_t thread_queries = 0;
     uint64_t values = 0xabcdabcd;
 
-    fprintf(stderr,"thread:%zu uses connection %p\n", td->tid, (void *)myconn);
+    fprintf(stderr,"execute: thread.%zu startes executing with connection %p\n", td->tid, (void *)myconn);
 
     struct xor_shift rand;
     xor_shift_init(&rand, td->tid);
@@ -310,7 +310,7 @@ static void *do_benchmark(void *arg) {
         }
     }
 
-    fprintf(stderr,"thread:%zu done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", td->tid, query_counter, found, unknown, values);
+    fprintf(stderr,"execute: thread.%zu done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", td->tid, query_counter, found, unknown, values);
 
     td->num_queries_hit = found;
     td->num_queries_missed = unknown;
