@@ -192,7 +192,10 @@ static void set_affinity( struct thread_data *td) {
     CPU_SET(td->tid, &cpuset);
     (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
     #else
-    # error Unknown platform
+    cpuset_t *cpuset = cpuset_create();
+    cpuset_set(td->tid, cpuset);
+    (void)pthread_setaffinity_np(pthread_self(), cpuset_size(cpuset), cpuset);
+    cpuset_destroy(cpuset);
     #endif
 }
 
