@@ -291,6 +291,10 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
 #pragma omp for schedule(static)
         for (size_t i = 0; i < (num_threads * settings->x_benchmark_queries); i++) {
 
+            if (second_counter == 180) {
+                continue;
+            }
+
             query_counter++;
             size_t idx = (i + (g_seed >> 16)) % (num_items);
             g_seed = (214013UL * g_seed + 2531011UL);
@@ -316,14 +320,14 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
                     fprintf(stderr, "thread.%d executed %lu queries in %lu us\n", thread_id,
                         (query_counter) - thread_queries, thread_elapsed_us);
 
-		    if (thread_id == 0 && second_counter == 20) {
-		    	start_dynrep_protocol();
-		    }
+                    if (second_counter == 1) {
+                        start_dynrep_protocol();
+                    }
 
                     // reset the thread start time
                     thread_start = thread_current;
                     thread_queries = (query_counter);
-		    second_counter++;
+                    second_counter++;
 		}
             }
         }
