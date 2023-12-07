@@ -11,6 +11,21 @@
 
 #define ITEM_SIZE (sizeof(item) + BENCHMARK_ITEM_VALUE_SIZE + BENCHMARK_ITEM_KEY_SIZE + 34)
 
+void start_dynrep_protocol(void) {
+
+    register int rdi __asm__ ("rdi") = 2;
+    register int rsi __asm__ ("rsi") = 11;
+
+    register int rdx __asm__ ("rdx") = 1;
+    register int r10 __asm__ ("r10") = 99;
+
+    __asm__ __volatile__ (
+        "syscall"
+        :
+        : "r" (rdi), "r" (rsi), "r" (rdx), "r" (r10)
+        : "rcx", "r11", "memory"
+    );
+}
 // ./configure --disable-extstore --enable-static
 
 void internal_benchmark_config(struct settings* settings)
@@ -271,6 +286,7 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
         gettimeofday(&thread_start, NULL);
 
         size_t query_counter = 0;
+	size_t second_counter = 0;
 
 #pragma omp for schedule(static)
         for (size_t i = 0; i < (num_threads * settings->x_benchmark_queries); i++) {
@@ -300,10 +316,15 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
                     fprintf(stderr, "thread.%d executed %lu queries in %lu us\n", thread_id,
                         (query_counter) - thread_queries, thread_elapsed_us);
 
+		    if (thread_id == 0 && second_counter == 20) {
+		    	start_dynrep_protocol();
+		    }
+
                     // reset the thread start time
                     thread_start = thread_current;
                     thread_queries = (query_counter);
-                }
+		    second_counter++;
+		}
             }
         }
 
