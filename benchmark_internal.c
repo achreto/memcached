@@ -11,6 +11,9 @@
 
 #define ITEM_SIZE (sizeof(item) + BENCHMARK_ITEM_VALUE_SIZE + BENCHMARK_ITEM_KEY_SIZE + 34)
 
+static unsigned int BARRIER = 0;
+pthread_mutex_t lock;
+
 // ./configure --disable-extstore --enable-static
 
 void internal_benchmark_config(struct settings* settings)
@@ -179,6 +182,11 @@ static void *do_populate(void *arg) {
         }
     }
     fprintf(stderr, "populate: thread.%zu done. added %zu elements, %zu not added of which %zu already existed\n", td->tid, num_added, num_not_added, num_existed);
+
+    pthread_mutex_lock(&lock);
+    BARRIER++;
+    pthread_mutex_unlock(&lock);     
+
     return (void *)my_counter;
 
 }
@@ -219,6 +227,20 @@ static void *do_run(void *arg) {
         // pthread_setaffinity_np(pthread_self(), cpuset_size(my_set), my_set);
 #endif
 
+    pthread_mutex_lock(&lock);
+    BARRIER--;
+    pthread_mutex_unlock(&lock);     
+    while(1) {
+        pthread_mutex_lock(&lock);
+        if(BARRIER == 0) {
+            // BARRIER = 0;
+            pthread_mutex_unlock(&lock); 
+            break;
+        } else {
+            pthread_mutex_unlock(&lock); 
+            // sleep(1);
+        }
+    }
     conn* myconn = td->connection;
 
     size_t unknown = 0;
@@ -271,12 +293,19 @@ static void *do_run(void *arg) {
 
     fprintf(stderr,"thread:%zu done. executed %zu found %zu, missed %zu  (checksum: %lx)\n", td->tid, query_counter, found, unknown, values);
 
+    pthread_mutex_lock(&lock);
+    BARRIER++;
+    pthread_mutex_unlock(&lock);     
+
     return (void *)query_counter;
 }
 
 
 void internal_benchmark_run(struct settings* settings, struct event_base *main_base)
 {
+
+    printf("HOMEBREW BARRIER VERSION\n");
+
     if (settings->x_benchmark_no_run) {
         fprintf(stderr, "=====================================\n");
         fprintf(stderr, "INTERNAL BENCHMARK SKIPPING\n");
@@ -301,7 +330,7 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
 
     // initialize barrier
     pthread_barrier_init(&barrier, NULL, num_threads + 1);
-
+    pthread_mutex_init(&lock, NULL);
 
     // calculate the amount of items to fit within memory.
     size_t num_items = settings->x_benchmark_mem / (ITEM_SIZE);
@@ -358,12 +387,23 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     }
 
     size_t num_elements = 0;
-    for (size_t i = 0; i < num_threads; i++) {
-        void* retval = NULL;
-        pthread_join(threads[i].thread, &retval);
-        num_elements += (size_t)retval;
-    }
+    // for (size_t i = 0; i < num_threads; i++) {
+    //     void* retval = NULL;
+    //     pthread_join(threads[i].thread, &retval);
+    //     num_elements += (size_t)retval;
+    // }
 
+    while(1) {
+        pthread_mutex_lock(&lock);
+        if(BARRIER == num_threads) {
+            // BARRIER = 0;
+            pthread_mutex_unlock(&lock); 
+            break;
+        } else {
+            pthread_mutex_unlock(&lock); 
+            sleep(1);
+        }
+    }
 
     gettimeofday(&end, NULL);
     timersub(&end, &start, &elapsed);
@@ -384,10 +424,21 @@ void internal_benchmark_run(struct settings* settings, struct event_base *main_b
     }
 
     size_t num_queries = 0;
-    for (size_t i = 0; i < num_threads; i++) {
-        void* retval = NULL;
-        pthread_join(threads[i].thread, &retval);
-        num_queries += (size_t)retval;
+    // for (size_t i = 0; i < num_threads; i++) {
+    //     void* retval = NULL;
+    //     pthread_join(threads[i].thread, &retval);
+    //     num_queries += (size_t)retval;
+    // }
+    while(1) {
+        pthread_mutex_lock(&lock);
+        if(BARRIER == num_threads) {
+            BARRIER = 0;
+            pthread_mutex_unlock(&lock); 
+            break;
+        } else {
+            pthread_mutex_unlock(&lock); 
+            sleep(1);
+        }
     }
 
     gettimeofday(&end, NULL);
