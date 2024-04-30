@@ -13,6 +13,9 @@
 // whether or not to prefill the slabs
 // #define PREFILL_SLABS 1
 
+// set to 1 if you want to run the first thread on main, 0 otherwise
+#define RUN_ON_MAIN 0
+
 #define ITEM_SIZE (sizeof(item) + BENCHMARK_ITEM_VALUE_SIZE + BENCHMARK_ITEM_KEY_SIZE + 34)
 
 // ./configure --disable-extstore --enable-static
@@ -49,23 +52,32 @@ static inline void barrier_phase_complete_wait()
 
     // enter the barrier by incrementing the barrier counter
     __atomic_fetch_add(&BARRIER, 1, __ATOMIC_SEQ_CST);
-    // pthread_mutex_lock(&lock);
-    // BARRIER++;
-    // pthread_mutex_unlock(&lock);
 
     // wait until we have moved to the next phase, no sleep here.
-    while (__atomic_load_n(&PHASE, __ATOMIC_SEQ_CST) == current)
-        ;
+    size_t counter = 0;
+    while (__atomic_load_n(&PHASE, __ATOMIC_SEQ_CST) == current) {
+        counter++;
+        if (counter > 1000) {
+            counter = 0;
+            sched_yield();
+        }
+    }
 }
 
 static void barrier_wait_trigger_next(size_t num_threads, size_t sleep_seconds)
 {
     // wait until all threads have completed the phase, sleep for 5 seconds to reduce contention
+    size_t counter = 0;
     while (__atomic_load_n(&BARRIER, __ATOMIC_SEQ_CST) != num_threads) {
         if (sleep_seconds > 0) {
             sleep(sleep_seconds);
+        } else {
+            counter++;
+            if (counter > 1000) {
+                counter = 0;
+                sched_yield();
+            }
         }
-        sched_yield();
     }
 
     // restore the barrier to zero
@@ -367,12 +379,16 @@ static void* do_benchmark(void* arg)
     struct thread_data* td = arg;
     fprintf(stderr, "thread:%03zu started\n", td->tid);
     barrier_phase_complete_wait(); // THREAD_READY -> POPULATE
+    fprintf(stderr, "thread:%03zu populating\n", td->tid);
     do_populate(arg);
     barrier_phase_complete_wait(); // POPULATE -> POPULATED
+    fprintf(stderr, "thread:%03zu ready\n", td->tid);
     // give time to print stats...
     barrier_phase_complete_wait(); // POPULATED -> RUN
+    fprintf(stderr, "thread:%03zu running\n", td->tid);
     do_run(arg);
     barrier_phase_complete_wait(); // RUN -> DONE
+    fprintf(stderr, "thread:%03zu done\n", td->tid);
     return NULL;
 }
 
@@ -410,6 +426,12 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     }
 #else
     printf("HOMEBREW BARRIER VERSION\n");
+#endif
+
+#if RUN_ON_MAIN == 1
+    printf("WORKERS: FIRST THREAD ON MAIN\n");
+#else
+    printf("WORKERS: ONLY USING WORKER THREADS\n");
 #endif
 
     // calculate the amount of items to fit within memory.
@@ -460,20 +482,26 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
 
     fprintf(stderr, "Starting threads...\n");
-    for (size_t i = 0; i < num_threads; i++) {
+    for (size_t i = RUN_ON_MAIN; i < num_threads; i++) {
         if (pthread_create(&threads[i].thread, NULL, do_benchmark, (void*)&threads[i]) != 0) {
             fprintf(stderr, "ERROR: failed to create thread!\n");
             exit(1);
-            ;
         }
     }
 
     // wait until everyone has reached the ready barrier, THREAD_READY -> POPULATE
-    barrier_wait_trigger_next(num_threads, 2);
+    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 2);
     gettimeofday(&start, NULL);
 
+
+#if RUN_ON_MAIN==1
+    struct thread_data* td = &threads[0];
+    fprintf(stderr, "thread:%03zu populating\n", td->tid);
+    do_populate(td);
+    fprintf(stderr, "thread:%03zu ready\n", td->tid);
+#endif
     // in the population phase, wait untill all threads done, POPULATE -> POPULATED
-    barrier_wait_trigger_next(num_threads, 2);
+    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 2);
     gettimeofday(&end, NULL);
     timersub(&end, &start, &elapsed);
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
@@ -490,15 +518,21 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
 
     // trigger next phase, POPULATED->RUN
-    barrier_wait_trigger_next(num_threads, 1);
+    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 1);
     gettimeofday(&start, NULL);
 
+#if RUN_ON_MAIN==1
+    fprintf(stderr, "thread:%03zu running\n", td->tid);
+    do_run(td);
+    fprintf(stderr, "thread:%03zu done\n", td->tid);
+#else
     if (settings->x_benchmark_query_duration > 2) {
         sleep(settings->x_benchmark_query_duration - 2);
     }
+#endif
 
     // trigger next phase, RUN->DONE
-    barrier_wait_trigger_next(num_threads, 0);
+    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 0);
     gettimeofday(&end, NULL);
     timersub(&end, &start, &elapsed);
     elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
