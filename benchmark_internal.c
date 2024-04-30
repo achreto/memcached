@@ -260,8 +260,8 @@ static void* do_populate(void* arg)
 
         item* it = item_alloc(key, BENCHMARK_ITEM_KEY_SIZE, 0, 0, BENCHMARK_ITEM_VALUE_SIZE);
         if (!it) {
-            printf("Item was NULL! %zu\n", i);
-            continue;
+            printf("FATAL: Item was NULL! this means we could not allocate storage for the item.\n");
+            exit(1);
         }
 
         memcpy(ITEM_data(it), value, BENCHMARK_ITEM_VALUE_SIZE);
@@ -388,7 +388,7 @@ static void* do_benchmark(void* arg)
     // fprintf(stderr, "thread:%03zu running\n", td->tid);
     do_run(arg);
     barrier_phase_complete_wait(); // RUN -> DONE
-    fprintf(stderr, "thread:%03zu done\n", td->tid);
+    // fprintf(stderr, "thread:%03zu done\n", td->tid);
     return NULL;
 }
 
