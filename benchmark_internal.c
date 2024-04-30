@@ -148,7 +148,7 @@ void internal_benchmark_config(struct settings* settings)
     }
 
     // calculate the maximum number of bytes
-    settings->maxbytes = settings->x_benchmark_mem;
+    settings->maxbytes = settings->x_benchmark_mem + (settings->x_benchmark_mem / 16);
 
     settings->use_cas = true;
     settings->lru_maintainer_thread = false;
@@ -308,7 +308,7 @@ static void* do_run(void* arg)
     size_t query_counter = 0;
     uint64_t values = 0xabcdabcd;
 
-    fprintf(stderr, "thread:%03zu uses connection %p\n", td->tid, (void*)myconn);
+    // fprintf(stderr, "thread:%03zu uses connection %p\n", td->tid, (void*)myconn);
 
     struct xor_shift rand;
     xor_shift_init(&rand, td->tid, td->num_items_total);
@@ -385,7 +385,7 @@ static void* do_benchmark(void* arg)
     fprintf(stderr, "thread:%03zu ready\n", td->tid);
     // give time to print stats...
     barrier_phase_complete_wait(); // POPULATED -> RUN
-    fprintf(stderr, "thread:%03zu running\n", td->tid);
+    // fprintf(stderr, "thread:%03zu running\n", td->tid);
     do_run(arg);
     barrier_phase_complete_wait(); // RUN -> DONE
     fprintf(stderr, "thread:%03zu done\n", td->tid);
@@ -526,8 +526,8 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     do_run(td);
     fprintf(stderr, "thread:%03zu done\n", td->tid);
 #else
-    if (settings->x_benchmark_query_duration > 2) {
-        sleep(settings->x_benchmark_query_duration - 2);
+    if (settings->x_benchmark_query_duration > 3) {
+        sleep(settings->x_benchmark_query_duration - 3);
     }
 #endif
 
