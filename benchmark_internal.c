@@ -381,8 +381,8 @@ static void* do_benchmark(void* arg)
     barrier_phase_complete_wait(); // THREAD_READY -> POPULATE
     fprintf(stderr, "thread:%03zu populating\n", td->tid);
     do_populate(arg);
-    barrier_phase_complete_wait(); // POPULATE -> POPULATED
     fprintf(stderr, "thread:%03zu ready\n", td->tid);
+    barrier_phase_complete_wait(); // POPULATE -> POPULATED
     // give time to print stats...
     barrier_phase_complete_wait(); // POPULATED -> RUN
     // fprintf(stderr, "thread:%03zu running\n", td->tid);
@@ -511,7 +511,9 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
         counter += threads[i].num_elements;
     }
 
+    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
     fprintf(stderr, "Populated %zu / %zu key-value pairs in %lu ms:\n", counter, num_items, elapsed_us / 1000);
+    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
 
     fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
     fprintf(stderr, "Executing %zu queries with %zu threads for %zu seconds.\n", num_threads * settings->x_benchmark_num_queries, num_threads, settings->x_benchmark_query_duration);
