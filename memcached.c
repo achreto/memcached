@@ -5060,6 +5060,7 @@ int main (int argc, char **argv) {
             break;
         case 'T':
             settings.x_benchmark_query_duration = ((size_t)atoi(optarg));
+            break;
         case 'z':
             settings.x_benchmark_no_run = true;
             break;
