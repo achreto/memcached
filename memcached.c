@@ -296,8 +296,9 @@ static void settings_init(void) {
     settings.sock_cookie_id = 0;
 #endif
 #ifdef MEMCACHED_INTERNAL_BENCHMARK
-    settings.x_benchmark_mem = 1024*1024;
-    settings.x_benchmark_queries = 100000;
+    settings.x_benchmark_mem = 1024;
+    settings.x_benchmark_num_queries = 10000;
+    settings.x_benchmark_query_duration = 2;
     settings.x_benchmark_write_ratio = 0;
     settings.x_benchmark_no_run = false;
 #endif
@@ -5034,7 +5035,8 @@ int main (int argc, char **argv) {
 #ifdef MEMCACHED_INTERNAL_BENCHMARK
         {"x-benchmark-no-run", no_argument, 0, 'z'},
         {"x-benchmark-mem", required_argument, 0, 'x'},
-        {"x-benchmark-queries", required_argument, 0, 'q'},
+        {"x-benchmark-num-queries", required_argument, 0, 'q'},
+        {"x-benchmark-query-duration", required_argument, 0, 'T'},
         {"x-benchmark-write-ratio", required_argument, 0, 'w'},
 #endif
         {0, 0, 0, 0}
@@ -5051,11 +5053,13 @@ int main (int argc, char **argv) {
             settings.x_benchmark_mem = ((size_t)atoi(optarg)) * 1024 * 1024;
             break;
         case 'q':
-            settings.x_benchmark_queries = ((size_t)atoi(optarg));
+            settings.x_benchmark_num_queries = ((size_t)atoi(optarg));
             break;
         case 'w':
             settings.x_benchmark_write_ratio = ((size_t)atoi(optarg));
             break;
+        case 'T':
+            settings.x_benchmark_query_duration = ((size_t)atoi(optarg));
         case 'z':
             settings.x_benchmark_no_run = true;
             break;
