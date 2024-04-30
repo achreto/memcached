@@ -554,7 +554,9 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     // converting num_queries per microsecond to num qeuries per second.
     fprintf(stderr, "benchmark took %lu queries / second\n", (num_queries * 1000000 / elapsed_us));
     fprintf(stderr, "benchmark executed %zu / %zu queries   (%zu missed) \n", num_queries, (num_threads * settings->x_benchmark_num_queries), missed_queries);
-
+    if (missed_queries > 0) {
+        fprintf(stderr, "benchmark missed %zu queries!\n", missed_queries);
+    }
     fprintf(stderr, "terminating.\n");
     fprintf(stderr, "===============================================================================\n");
     fprintf(stderr, "===============================================================================\n");
