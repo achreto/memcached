@@ -13,9 +13,6 @@
 // whether or not to prefill the slabs
 // #define PREFILL_SLABS 1
 
-// set to 1 if you want to run the first thread on main, 0 otherwise
-#define RUN_ON_MAIN 0
-
 #define ITEM_SIZE (sizeof(item) + BENCHMARK_ITEM_VALUE_SIZE + BENCHMARK_ITEM_KEY_SIZE + 34)
 
 // ./configure --disable-extstore --enable-static
@@ -66,11 +63,14 @@ static inline void barrier_phase_complete_wait()
 
 static void barrier_wait_trigger_next(size_t num_threads, size_t sleep_seconds)
 {
+    // enter the barrier by incrementing the barrier counter
+    __atomic_fetch_add(&BARRIER, 1, __ATOMIC_SEQ_CST);
+
     // wait until all threads have completed the phase, sleep for 5 seconds to reduce contention
     size_t counter = 0;
     while (__atomic_load_n(&BARRIER, __ATOMIC_SEQ_CST) != num_threads) {
         if (sleep_seconds > 0) {
-            sleep(sleep_seconds);
+            // sleep(sleep_seconds);
         } else {
             counter++;
             if (counter > 1000) {
@@ -320,9 +320,9 @@ static void* do_run(void* arg)
         thread_current.tv_sec = 3600 * 24; // let's set a timeout to 24 hours...
     }
 
-    size_t max_queries =  td->settings->x_benchmark_num_queries;
+    size_t max_queries = td->settings->x_benchmark_num_queries;
     if (max_queries == 0) {
-        max_queries = 0xffffffffffffffff;  // set it to a large number
+        max_queries = 0xffffffffffffffff; // set it to a large number
     }
 
     // record the start time and calculate the end time
@@ -330,7 +330,7 @@ static void* do_run(void* arg)
     timeradd(&thread_start, &thread_current, &thread_stop);
 
     do {
-        if (query_counter == td->settings->x_benchmark_num_queries) {
+        if (query_counter == max_queries) {
             break;
         }
         // only check the time so often...
@@ -378,17 +378,81 @@ static void* do_benchmark(void* arg)
 {
     struct thread_data* td = arg;
     fprintf(stderr, "thread:%03zu started\n", td->tid);
-    barrier_phase_complete_wait(); // THREAD_READY -> POPULATE
-    fprintf(stderr, "thread:%03zu populating\n", td->tid);
-    do_populate(arg);
-    fprintf(stderr, "thread:%03zu ready\n", td->tid);
-    barrier_phase_complete_wait(); // POPULATE -> POPULATED
-    // give time to print stats...
-    barrier_phase_complete_wait(); // POPULATED -> RUN
-    // fprintf(stderr, "thread:%03zu running\n", td->tid);
-    do_run(arg);
-    barrier_phase_complete_wait(); // RUN -> DONE
-    // fprintf(stderr, "thread:%03zu done\n", td->tid);
+    if (td->tid == 0) {
+        struct timeval start, end, elapsed;
+        uint64_t elapsed_us;
+        // wait until everyone has reached the ready barrier, THREAD_READY -> POPULATE
+        barrier_wait_trigger_next(td->num_threads, 2);
+        gettimeofday(&start, NULL);
+        fprintf(stderr, "thread:%03zu populating\n", td->tid);
+        do_populate(td);
+        fprintf(stderr, "thread:%03zu ready\n", td->tid);
+
+        barrier_wait_trigger_next(td->num_threads, 2);
+        gettimeofday(&end, NULL);
+        timersub(&end, &start, &elapsed);
+        elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
+
+        size_t counter = 0;
+        for (size_t i = 0; i < td->num_threads; i++) {
+            // XXX: assumes the thread is there
+            counter += td[i].num_elements;
+        }
+
+        fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+        fprintf(stderr, "Populated %zu / %zu key-value pairs in %lu ms:\n", counter, td->num_items, elapsed_us / 1000);
+        fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+
+        fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+        fprintf(stderr, "Executing %zu queries with %zu threads for %zu seconds.\n", td->num_threads * td->settings->x_benchmark_num_queries, td->num_threads, td->settings->x_benchmark_query_duration);
+        fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+
+        // trigger next phase, POPULATED->RUN
+        barrier_wait_trigger_next(td->num_threads, 1);
+        gettimeofday(&start, NULL);
+        do_run(arg);
+        // trigger next phase, RUN->DONE
+        barrier_wait_trigger_next(td->num_threads, 0);
+        gettimeofday(&end, NULL);
+
+        timersub(&end, &start, &elapsed);
+        elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
+
+        size_t num_queries = 0;
+        size_t missed_queries = 0;
+        for (size_t i = 0; i < td->num_threads; i++) {
+            num_queries += (td[i].num_queries_hit + td[i].num_queries_missed);
+            missed_queries += td[i].num_queries_missed;
+        }
+
+        fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+        fprintf(stderr, "Benchmark Done.\n");
+        fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+
+        fprintf(stderr, "benchmark took %lu ms (of %lu ms)\n", elapsed_us / 1000, td->settings->x_benchmark_query_duration * 1000);
+        fprintf(stderr, "benchmark executed %zu / %zu queries   (%zu missed) \n", num_queries, (td->num_threads * td->settings->x_benchmark_num_queries), missed_queries);
+        // converting num_queries per microsecond to num qeuries per second.
+        fprintf(stderr, "benchmark throughput %lu queries / second\n", (num_queries * 1000000 / elapsed_us));
+        if (missed_queries > 0) {
+            fprintf(stderr, "benchmark missed %zu queries!\n", missed_queries);
+        }
+        fprintf(stderr, "terminating.\n");
+        fprintf(stderr, "===============================================================================\n");
+        fprintf(stderr, "===============================================================================\n");
+        exit(0);
+    } else {
+        barrier_phase_complete_wait(); // THREAD_READY -> POPULATE
+        fprintf(stderr, "thread:%03zu populating\n", td->tid);
+        do_populate(arg);
+        // fprintf(stderr, "thread:%03zu ready\n", td->tid);
+        barrier_phase_complete_wait(); // POPULATE -> POPULATED
+        // give time to print stats...
+        barrier_phase_complete_wait(); // POPULATED -> RUN
+        // fprintf(stderr, "thread:%03zu running\n", td->tid);
+        do_run(arg);
+        barrier_phase_complete_wait(); // RUN -> DONE
+        // fprintf(stderr, "thread:%03zu done\n", td->tid);
+    }
     return NULL;
 }
 
@@ -428,12 +492,6 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     printf("HOMEBREW BARRIER VERSION\n");
 #endif
 
-#if RUN_ON_MAIN == 1
-    printf("WORKERS: FIRST THREAD ON MAIN\n");
-#else
-    printf("WORKERS: ONLY USING WORKER THREADS\n");
-#endif
-
     // calculate the amount of items to fit within memory.
     size_t num_items = settings->x_benchmark_mem / (ITEM_SIZE);
     if (num_items < 100) {
@@ -459,9 +517,6 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
         threads[i].num_threads = num_threads;
     }
 
-    struct timeval start, end, elapsed;
-    uint64_t elapsed_us;
-
     fprintf(stderr, "number of threads: %zu\n", num_threads);
     fprintf(stderr, "item size: %zu bytes\n", ITEM_SIZE);
     fprintf(stderr, "number of keys: %zu\n", num_items);
@@ -482,84 +537,17 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
     fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
 
     fprintf(stderr, "Starting threads...\n");
-    for (size_t i = RUN_ON_MAIN; i < num_threads; i++) {
+    for (size_t i = 0; i < num_threads; i++) {
         if (pthread_create(&threads[i].thread, NULL, do_benchmark, (void*)&threads[i]) != 0) {
             fprintf(stderr, "ERROR: failed to create thread!\n");
             exit(1);
         }
     }
 
-    // wait until everyone has reached the ready barrier, THREAD_READY -> POPULATE
-    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 2);
-    gettimeofday(&start, NULL);
-
-
-#if RUN_ON_MAIN==1
-    struct thread_data* td = &threads[0];
-    fprintf(stderr, "thread:%03zu populating\n", td->tid);
-    do_populate(td);
-    fprintf(stderr, "thread:%03zu ready\n", td->tid);
-#endif
-    // in the population phase, wait untill all threads done, POPULATE -> POPULATED
-    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 2);
-    gettimeofday(&end, NULL);
-    timersub(&end, &start, &elapsed);
-    elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
-
-    size_t counter = 0;
-    for (size_t i = 0; i < num_threads; i++) {
-        counter += threads[i].num_elements;
-    }
-
-    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-    fprintf(stderr, "Populated %zu / %zu key-value pairs in %lu ms:\n", counter, num_items, elapsed_us / 1000);
-    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-
-    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-    fprintf(stderr, "Executing %zu queries with %zu threads for %zu seconds.\n", num_threads * settings->x_benchmark_num_queries, num_threads, settings->x_benchmark_query_duration);
-    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-
-    // trigger next phase, POPULATED->RUN
-    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 1);
-    gettimeofday(&start, NULL);
-
-#if RUN_ON_MAIN==1
-    fprintf(stderr, "thread:%03zu running\n", td->tid);
-    do_run(td);
-    fprintf(stderr, "thread:%03zu done\n", td->tid);
-#else
-    if (settings->x_benchmark_query_duration > 3) {
-        sleep(settings->x_benchmark_query_duration - 3);
-    }
-#endif
-
-    // trigger next phase, RUN->DONE
-    barrier_wait_trigger_next(num_threads - RUN_ON_MAIN, 0);
-    gettimeofday(&end, NULL);
-    timersub(&end, &start, &elapsed);
-    elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
-
-    size_t num_queries = 0;
-    size_t missed_queries = 0;
-    for (size_t i = 0; i < num_threads; i++) {
-        num_queries += (threads[i].num_queries_hit + threads[i].num_queries_missed);
-        missed_queries += threads[i].num_queries_missed;
-    }
-
-    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-    fprintf(stderr, "Benchmark Done.\n");
-    fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
-
-    fprintf(stderr, "benchmark took %lu ms (of %lu ms)\n", elapsed_us / 1000, settings->x_benchmark_query_duration * 1000);
-    // converting num_queries per microsecond to num qeuries per second.
-    fprintf(stderr, "benchmark took %lu queries / second\n", (num_queries * 1000000 / elapsed_us));
-    fprintf(stderr, "benchmark executed %zu / %zu queries   (%zu missed) \n", num_queries, (num_threads * settings->x_benchmark_num_queries), missed_queries);
-    if (missed_queries > 0) {
-        fprintf(stderr, "benchmark missed %zu queries!\n", missed_queries);
-    }
-    fprintf(stderr, "terminating.\n");
-    fprintf(stderr, "===============================================================================\n");
-    fprintf(stderr, "===============================================================================\n");
+    // here we just sleep to get out of the way...
+    // we run only on freshly started threads...
+    printf("main thread sleeping...");
+    sleep(3600 * 24);
 
     // join the threads in the end
     for (size_t i = 0; i < num_threads; i++) {
