@@ -10,6 +10,9 @@
 // whether to use the homebrew barrier instead of the pthread barrier
 #define USE_HOMEBREW_BARRIER 1
 
+// the duration of the sleep at the start of the execution
+#define THREADS_INITIAL_SLEEP 5
+
 // whether or not to prefill the slabs
 // #define PREFILL_SLABS 1
 
@@ -29,6 +32,8 @@ pthread_barrier_t barrier;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #ifdef USE_HOMEBREW_BARRIER
+
+#define BARRIER_POLL_BEFORE_YIELD 5000
 
 enum benchmark_phase {
     THREAD_READY,
@@ -54,14 +59,14 @@ static inline void barrier_phase_complete_wait()
     size_t counter = 0;
     while (__atomic_load_n(&PHASE, __ATOMIC_SEQ_CST) == current) {
         counter++;
-        if (counter > 1000) {
+        if (counter > BARRIER_POLL_BEFORE_YIELD) {
             counter = 0;
             sched_yield();
         }
     }
 }
 
-static void barrier_wait_trigger_next(size_t num_threads, size_t sleep_seconds)
+static void barrier_wait_trigger_next(size_t num_threads)
 {
     // enter the barrier by incrementing the barrier counter
     __atomic_fetch_add(&BARRIER, 1, __ATOMIC_SEQ_CST);
@@ -69,14 +74,10 @@ static void barrier_wait_trigger_next(size_t num_threads, size_t sleep_seconds)
     // wait until all threads have completed the phase, sleep for 5 seconds to reduce contention
     size_t counter = 0;
     while (__atomic_load_n(&BARRIER, __ATOMIC_SEQ_CST) != num_threads) {
-        if (sleep_seconds > 0) {
-            // sleep(sleep_seconds);
-        } else {
-            counter++;
-            if (counter > 1000) {
-                counter = 0;
-                sched_yield();
-            }
+        counter++;
+        if (counter > BARRIER_POLL_BEFORE_YIELD) {
+            counter = 0;
+            sched_yield();
         }
     }
 
@@ -378,17 +379,21 @@ static void* do_benchmark(void* arg)
 {
     struct thread_data* td = arg;
     fprintf(stderr, "thread:%03zu started\n", td->tid);
+
+    // Give some time to the other threads to start up.
+    sleep(THREADS_INITIAL_SLEEP);
+
     if (td->tid == 0) {
         struct timeval start, end, elapsed;
         uint64_t elapsed_us;
         // wait until everyone has reached the ready barrier, THREAD_READY -> POPULATE
-        barrier_wait_trigger_next(td->num_threads, 2);
+        barrier_wait_trigger_next(td->num_threads);
         gettimeofday(&start, NULL);
         fprintf(stderr, "thread:%03zu populating\n", td->tid);
         do_populate(td);
         fprintf(stderr, "thread:%03zu ready\n", td->tid);
 
-        barrier_wait_trigger_next(td->num_threads, 2);
+        barrier_wait_trigger_next(td->num_threads);
         gettimeofday(&end, NULL);
         timersub(&end, &start, &elapsed);
         elapsed_us = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
@@ -408,11 +413,11 @@ static void* do_benchmark(void* arg)
         fprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
 
         // trigger next phase, POPULATED->RUN
-        barrier_wait_trigger_next(td->num_threads, 1);
+        barrier_wait_trigger_next(td->num_threads);
         gettimeofday(&start, NULL);
         do_run(arg);
         // trigger next phase, RUN->DONE
-        barrier_wait_trigger_next(td->num_threads, 0);
+        barrier_wait_trigger_next(td->num_threads);
         gettimeofday(&end, NULL);
 
         timersub(&end, &start, &elapsed);
@@ -546,7 +551,7 @@ void internal_benchmark_run(struct settings* settings, struct event_base* main_b
 
     // here we just sleep to get out of the way...
     // we run only on freshly started threads...
-    printf("main thread sleeping...");
+    printf("main thread sleeping...\n");
     sleep(3600 * 24);
 
     // join the threads in the end
