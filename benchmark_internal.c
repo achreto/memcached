@@ -13,6 +13,9 @@
 // the duration of the sleep at the start of the execution
 #define THREADS_INITIAL_SLEEP 5
 
+// maximum number of threads supported
+#define THREADS_MAX 1024
+
 // whether or not to prefill the slabs
 // #define PREFILL_SLABS 1
 
@@ -36,24 +39,25 @@ pthread_barrier_t barrier;
 #define BARRIER_POLL_BEFORE_YIELD 5000
 
 enum benchmark_phase {
-    THREAD_READY,
+    THREAD_READY = 0,
     POPULATE,
     POPULATED,
     RUN,
     DONE
 };
 
-static volatile enum benchmark_phase PHASE;
-static volatile unsigned int BARRIER = 0;
+static volatile enum benchmark_phase PHASE = THREAD_READY;
+static volatile int BARRIER[THREADS_MAX] = {0};
+
 pthread_mutex_t lock;
 
-static inline void barrier_phase_complete_wait()
+static inline void barrier_phase_complete_wait(size_t tid)
 {
     // get the current phase value
     enum benchmark_phase current = __atomic_load_n(&PHASE, __ATOMIC_SEQ_CST);
 
-    // enter the barrier by incrementing the barrier counter
-    __atomic_fetch_add(&BARRIER, 1, __ATOMIC_SEQ_CST);
+    // enter the barrier by setting the thread's barrier flag to 1
+    __atomic_store_n(&BARRIER[tid], 1, __ATOMIC_SEQ_CST);
 
     // wait until we have moved to the next phase, no sleep here.
     size_t counter = 0;
@@ -69,20 +73,23 @@ static inline void barrier_phase_complete_wait()
 static void barrier_wait_trigger_next(size_t num_threads)
 {
     // enter the barrier by incrementing the barrier counter
-    __atomic_fetch_add(&BARRIER, 1, __ATOMIC_SEQ_CST);
+    //__atomic_fetch_add(&BARRIER, 1, __ATOMIC_SEQ_CST);
+    BARRIER[0] = 1;
 
-    // wait until all threads have completed the phase, sleep for 5 seconds to reduce contention
+    // go through the threads and wait until they have all entered the barrier
     size_t counter = 0;
-    while (__atomic_load_n(&BARRIER, __ATOMIC_SEQ_CST) != num_threads) {
-        counter++;
-        if (counter > BARRIER_POLL_BEFORE_YIELD) {
-            counter = 0;
-            sched_yield();
+    for (size_t tid = 1; tid < num_threads; tid++) {
+        // wait until the thread signals it has entered the barrier
+        while(__atomic_load_n(&BARRIER[tid], __ATOMIC_SEQ_CST) == 0) {
+            counter++;
+            if (counter > BARRIER_POLL_BEFORE_YIELD) {
+                counter = 0;
+                sched_yield();
+            }
         }
+        // we've seen this thread, so we can reset the the thread's barrier flag again.
+        BARRIER[tid] = 0;
     }
-
-    // restore the barrier to zero
-    __atomic_store_n(&BARRIER, 0, __ATOMIC_SEQ_CST);
 
     // trigger next phase
     switch (PHASE) {
@@ -449,16 +456,16 @@ static void* do_benchmark(void* arg)
         fprintf(stderr, "===============================================================================\n");
         exit(0);
     } else {
-        barrier_phase_complete_wait(); // THREAD_READY -> POPULATE
+        barrier_phase_complete_wait(td->tid); // THREAD_READY -> POPULATE
         fprintf(stderr, "thread:%03zu populating\n", td->tid);
         do_populate(arg);
         // fprintf(stderr, "thread:%03zu ready\n", td->tid);
-        barrier_phase_complete_wait(); // POPULATE -> POPULATED
+        barrier_phase_complete_wait(td->tid); // POPULATE -> POPULATED
         // give time to print stats...
-        barrier_phase_complete_wait(); // POPULATED -> RUN
+        barrier_phase_complete_wait(td->tid); // POPULATED -> RUN
         // fprintf(stderr, "thread:%03zu running\n", td->tid);
         do_run(arg);
-        barrier_phase_complete_wait(); // RUN -> DONE
+        barrier_phase_complete_wait(td->tid); // RUN -> DONE
         // fprintf(stderr, "thread:%03zu done\n", td->tid);
     }
     return NULL;
