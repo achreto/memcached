@@ -159,6 +159,9 @@ void internal_benchmark_config(struct settings* settings)
         hash_power++;
     }
 
+#ifdef PROXY
+    settings->proxy_enabled = false;
+#endif
     settings->hashpower_init = hash_power;
 
     settings->slab_reassign = false;

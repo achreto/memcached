@@ -5742,6 +5742,17 @@ int main (int argc, char **argv) {
         }
     }
 
+#ifdef MEMCACHED_INTERNAL_BENCHMARK
+    start_lru_maintainer = false;
+    start_lru_crawler = false;
+    start_assoc_maint = false;
+    settings.slab_reassign = false;
+    settings.idle_timeout = 0;
+    #ifdef PROXY
+    settings.proxy_enabled = false;
+    #endif
+#endif
+
     if (settings.num_napi_ids > settings.num_threads) {
         fprintf(stderr, "Number of napi_ids(%d) cannot be greater than number of threads(%d)\n",
                 settings.num_napi_ids, settings.num_threads);
@@ -6050,7 +6061,7 @@ int main (int argc, char **argv) {
 
     /* initialize other stuff */
     stats_init();
-    logger_init();
+    // logger_init();
     conn_init();
     bool reuse_mem = false;
     void *mem_base = NULL;
