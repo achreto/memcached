@@ -21,7 +21,37 @@
 
 #define ITEM_SIZE (sizeof(item) + BENCHMARK_ITEM_VALUE_SIZE + BENCHMARK_ITEM_KEY_SIZE + 34)
 
+void start_dynrep_protocol(void) {
+
+    register int rdi __asm__ ("rdi") = 2;
+    register int rsi __asm__ ("rsi") = 11;
+
+    register int rdx __asm__ ("rdx") = 1;
+    register int r10 __asm__ ("r10") = 99;
+
+    __asm__ __volatile__ (
+        "syscall"
+        :
+        : "r" (rdi), "r" (rsi), "r" (rdx), "r" (r10)
+        : "rcx", "r11", "memory"
+    );
+}
 // ./configure --disable-extstore --enable-static
+
+void memory_prealloc(mem_in_bytes: uint64_t) {
+
+    register int rdi __asm__ ("rdi") = 1;
+    register int rsi __asm__ ("rsi") = 12;
+
+    register int rdx __asm__ ("rdx") = mem_in_bytes;
+
+    __asm__ __volatile__ (
+        "syscall"
+        :
+        : "r" (rdi), "r" (rsi), "r" (rdx)
+        : "rcx", "r11", "memory"
+    );
+}
 
 size_t num_elements;
 size_t num_queries;
@@ -175,8 +205,13 @@ void internal_benchmark_config(struct settings* settings)
     settings->idle_timeout = false;
     settings->item_size_max = 1024;
     settings->slab_page_size = BENCHMARK_USED_SLAB_PAGE_SIZE;
+
     fprintf(stderr, "------------------------------------------\n");
-    fprintf(stderr, " - x_benchmark_mem = %zu MB\n", settings->x_benchmark_mem >> 20);
+    fprintf(stderr, " - x_benchmark_mem = %zu MB...", settings->x_benchmark_mem >> 20);
+
+    memory_prealloc(x_benchmark_mem);
+    fprintf(stderr, " prealloced!\n");
+
     fprintf(stderr, " - x_benchmark_num_queries = %zu\n", settings->x_benchmark_num_queries);
     fprintf(stderr, " - x_benchmark_query_time = %zu s\n", settings->x_benchmark_query_duration);
     fprintf(stderr, " - num_threads = %u\n", omp_get_num_procs());
@@ -184,6 +219,7 @@ void internal_benchmark_config(struct settings* settings)
     fprintf(stderr, " - slab_page_size = %u kB\n", settings->slab_page_size >> 10);
     fprintf(stderr, " - hashpower_init = %u\n", settings->hashpower_init);
     fprintf(stderr, "------------------------------------------\n");
+
 }
 
 #ifndef __linux__
@@ -340,6 +376,8 @@ static void* do_run(void* arg)
     gettimeofday(&thread_start, NULL);
     timeradd(&thread_start, &thread_current, &thread_stop);
 
+    bool started_dynrep = false;
+
     do {
         if (query_counter == max_queries) {
             break;
@@ -354,6 +392,11 @@ static void* do_run(void* arg)
                 uint64_t thread_elapsed_us = (thread_elapsed.tv_sec * 1000000) + thread_elapsed.tv_usec;
                 fprintf(stderr, "thread:%03zu executed %lu queries in %lu ms\n", td->tid,
                     (query_counter)-thread_queries, thread_elapsed_us / 1000);
+
+                if (!started_dynrep) {
+                    start_dynrep_protocol();
+                    started_dynrep = true;
+                }
 
                 // reset the thread start time
                 thread_start = thread_current;
