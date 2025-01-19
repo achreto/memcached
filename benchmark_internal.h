@@ -27,8 +27,8 @@
 #define PERIODIC_PRINT_INTERVAL 1 // seconds
 
 /// THIS IS THE AMOUNT FOR THE HASH TABLE ITEM
-#define BENCHMARK_ITEM_VALUE_SIZE 256
-#define BENCHMARK_ITEM_KEY_SIZE 16
+#define BENCHMARK_ITEM_VALUE_SIZE 64
+#define BENCHMARK_ITEM_KEY_SIZE 8
 
 #ifdef LOW_MEMORY
 ////////////////////////////////////////////////////////////////////////////////////////////////////
