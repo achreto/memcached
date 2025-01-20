@@ -221,6 +221,8 @@ static void settings_init(void) {
     settings.access = 0700;
     settings.port = 11211;
     settings.udpport = 0;
+    settings.dyn_rep_test = false;
+    settings.prealloc_mem = false;
 #ifdef TLS
     settings.ssl_enabled = false;
     settings.ssl_ctx = NULL;
@@ -4060,6 +4062,7 @@ static void usage(void) {
            "-v, --verbose             verbose (print errors/warnings while in event loop)\n"
            "-vv                       very verbose (also print client commands/responses)\n"
            "-vvv                      extremely verbose (internal state transitions)\n"
+           ""
            "-h, --help                print this help and exit\n"
            "-i, --license             print memcached and libevent license\n"
            "-V, --version             print version and exit\n"
@@ -4966,6 +4969,8 @@ int main (int argc, char **argv) {
           "hiV" /* help, licence info, version */
           "r"   /* maximize core file limit */
           "v"   /* verbose */
+          "y"   /* DiNOS: dynamic replication */
+          "E"   /* DiNOS: preallocate memory */
           "d"   /* daemon mode */
           "l:"  /* interface to listen on */
           "u:"  /* user identity to run as */
@@ -5011,6 +5016,8 @@ int main (int argc, char **argv) {
         {"version", no_argument, 0, 'V'},
         {"enable-coredumps", no_argument, 0, 'r'},
         {"verbose", optional_argument, 0, 'v'},
+        {"dyn-rep-test", optional_argument, 0, 'y'},   /* DiNOS: dynamic replication */
+        {"prealloc-mem", optional_argument, 0, 'E'},   /* DiNOS: preallocate memory */
         {"daemon", no_argument, 0, 'd'},
         {"listen", required_argument, 0, 'l'},
         {"user", required_argument, 0, 'u'},
@@ -5130,6 +5137,14 @@ int main (int argc, char **argv) {
             break;
         case 'v':
             settings.verbose++;
+            break;
+        case 'y':
+            settings.dyn_rep_test = true;
+            printf("DYNREPTEST PASSED\n");
+            break;
+        case 'E':
+            settings.prealloc_mem = true;
+            printf("PREALLOC PARSED\n");
             break;
         case 'l':
             if (settings.inter != NULL) {

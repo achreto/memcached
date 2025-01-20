@@ -40,15 +40,16 @@ void start_dynrep_protocol(void) {
 
 void memory_prealloc(uint64_t mem_in_bytes) {
 
-    register int rdi __asm__ ("rdi") = 1;
+    register int rdi __asm__ ("rdi") = 2;
     register int rsi __asm__ ("rsi") = 12;
 
-    register int rdx __asm__ ("rdx") = mem_in_bytes;
+    register int rdx __asm__ ("rdx") = 1;
+    register int r10 __asm__ ("r10") = mem_in_bytes;
 
     __asm__ __volatile__ (
         "syscall"
         :
-        : "r" (rdi), "r" (rsi), "r" (rdx)
+        : "r" (rdi), "r" (rsi), "r" (rdx), "r" (r10)
         : "rcx", "r11", "memory"
     );
 }
@@ -209,8 +210,10 @@ void internal_benchmark_config(struct settings* settings)
     fprintf(stderr, "------------------------------------------\n");
     fprintf(stderr, " - x_benchmark_mem = %zu MB...", settings->x_benchmark_mem >> 20);
 
-    memory_prealloc(settings->x_benchmark_mem);
-    fprintf(stderr, " prealloced!\n");
+    if (settings->prealloc_mem) {
+        memory_prealloc(settings->x_benchmark_mem);
+        fprintf(stderr, " prealloced!\n");
+    }
 
     fprintf(stderr, " - x_benchmark_num_queries = %zu\n", settings->x_benchmark_num_queries);
     fprintf(stderr, " - x_benchmark_query_time = %zu s\n", settings->x_benchmark_query_duration);
@@ -376,8 +379,7 @@ static void* do_run(void* arg)
     gettimeofday(&thread_start, NULL);
     timeradd(&thread_start, &thread_current, &thread_stop);
 
-    bool started_dynrep = false;
-
+    bool started_dynrep = !(td->settings->dyn_rep_test);
     do {
         if (query_counter == max_queries) {
             break;
