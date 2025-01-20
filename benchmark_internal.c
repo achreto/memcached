@@ -209,11 +209,14 @@ void internal_benchmark_config(struct settings* settings)
 
     fprintf(stderr, "------------------------------------------\n");
     fprintf(stderr, " - x_benchmark_mem = %zu MB...", settings->x_benchmark_mem >> 20);
+    fflush(stderr);
 
     if (settings->prealloc_mem) {
         fprintf(stderr, " preallocating %zu B...", (uint64_t)(settings->x_benchmark_mem));
+        fflush(stderr);
         memory_prealloc(settings->x_benchmark_mem);
         fprintf(stderr, " prealloced!\n");
+        fflush(stderr);
     }
 
     fprintf(stderr, " - x_benchmark_num_queries = %zu\n", settings->x_benchmark_num_queries);
