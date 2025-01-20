@@ -5140,11 +5140,9 @@ int main (int argc, char **argv) {
             break;
         case 'y':
             settings.dyn_rep_test = true;
-            printf("DYNREPTEST PASSED\n");
             break;
         case 'E':
             settings.prealloc_mem = true;
-            printf("PREALLOC PARSED\n");
             break;
         case 'l':
             if (settings.inter != NULL) {
