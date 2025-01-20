@@ -38,7 +38,7 @@ void start_dynrep_protocol(void) {
 }
 // ./configure --disable-extstore --enable-static
 
-void memory_prealloc(uint64_t mem_in_bytes) {
+void memory_prealloc(int32_t mem_in_bytes) {
 
     register int rdi __asm__ ("rdi") = 2;
     register int rsi __asm__ ("rsi") = 12;
