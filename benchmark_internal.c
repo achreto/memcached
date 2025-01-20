@@ -38,7 +38,7 @@ void start_dynrep_protocol(void) {
 }
 // ./configure --disable-extstore --enable-static
 
-void memory_prealloc(int mem_in_bytes) {
+void memory_prealloc(uint64_t mem_in_bytes) {
 
     register int rdi __asm__ ("rdi") = 2;
     register int rsi __asm__ ("rsi") = 12;
@@ -211,6 +211,7 @@ void internal_benchmark_config(struct settings* settings)
     fprintf(stderr, " - x_benchmark_mem = %zu MB...", settings->x_benchmark_mem >> 20);
 
     if (settings->prealloc_mem) {
+        fprintf(stderr, " preallocating %zu B...", (uint64_t)(settings->x_benchmark_mem));
         memory_prealloc(settings->x_benchmark_mem);
         fprintf(stderr, " prealloced!\n");
     }
