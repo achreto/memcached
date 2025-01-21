@@ -209,7 +209,10 @@ void internal_benchmark_config(struct settings* settings)
 
     fprintf(stderr, "------------------------------------------\n");
     fprintf(stderr, " - x_benchmark_mem = %zu MB\n", settings->x_benchmark_mem >> 20);
-    memory_prealloc((settings->num_threads * 50) + 50);
+
+    if (settings->prealloc_mem) {
+        memory_prealloc((settings->num_threads * 50) + 50);
+    }
 
     fprintf(stderr, " - x_benchmark_num_queries = %zu\n", settings->x_benchmark_num_queries);
     fprintf(stderr, " - x_benchmark_query_time = %zu s\n", settings->x_benchmark_query_duration);
@@ -292,7 +295,9 @@ static void* do_populate(void* arg)
     size_t num_existed = 0;
     size_t num_other_errors = 0;
 
-    memory_prealloc(((td->settings->x_benchmark_mem >> 20) + td->num_threads) / td->num_threads);
+    if (td->settings->prealloc_mem) {
+        memory_prealloc(((td->settings->x_benchmark_mem >> 20) + td->num_threads) / td->num_threads);
+    }
     for (size_t i = 0; i < td->num_items; i++) {
         // calculate the key id
         size_t keyval = td->tid * td->num_items + i;
