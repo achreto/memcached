@@ -211,7 +211,7 @@ void internal_benchmark_config(struct settings* settings)
     fprintf(stderr, " - x_benchmark_mem = %zu MB\n", settings->x_benchmark_mem >> 20);
 
     if (settings->prealloc_mem) {
-        memory_prealloc((settings->num_threads * 50) + 50);
+        memory_prealloc(settings->num_threads * 75);
     }
 
     fprintf(stderr, " - x_benchmark_num_queries = %zu\n", settings->x_benchmark_num_queries);
@@ -296,7 +296,8 @@ static void* do_populate(void* arg)
     size_t num_other_errors = 0;
 
     if (td->settings->prealloc_mem) {
-        memory_prealloc(((td->settings->x_benchmark_mem >> 20) + td->num_threads) / td->num_threads);
+        fprintf(stderr, "prealloc: thread:%03zu prealloc'ing %03zu memslices. \n", td->tid, td->num_items * (BENCHMARK_ITEM_KEY_SIZE + BENCHMARK_ITEM_VALUE_SIZE + 2) >> 20);
+        memory_prealloc(td->num_items * (BENCHMARK_ITEM_KEY_SIZE + BENCHMARK_ITEM_VALUE_SIZE + 2) >> 20);
     }
     for (size_t i = 0; i < td->num_items; i++) {
         // calculate the key id
@@ -337,7 +338,7 @@ static void* do_populate(void* arg)
         }
 
         if ((my_counter % 100000) == 0) {
-            fprintf(stderr, "populate: thread:%03zu added %zu elements. \n", td->tid, my_counter);
+            fprintf(stderr, "populate: thread:%03zu added %zu/%zu elements. \n", td->tid, my_counter, td->num_items);
         }
     }
     fprintf(stderr, "populate: thread:%03zu done. added %zu elements, %zu not added of which %zu already existed\n", td->tid, num_added, num_not_added, num_existed);
