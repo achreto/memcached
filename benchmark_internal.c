@@ -187,7 +187,7 @@ void internal_benchmark_config(struct settings* settings)
     }
 
     // calculate the maximum number of bytes
-    settings->maxbytes = settings->x_benchmark_mem + (settings->x_benchmark_mem / 16);
+    settings->maxbytes = settings->x_benchmark_mem + (settings->x_benchmark_mem / 8);
 
     settings->use_cas = true;
     settings->lru_maintainer_thread = false;
